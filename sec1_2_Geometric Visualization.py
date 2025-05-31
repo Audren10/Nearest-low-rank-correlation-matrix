@@ -33,11 +33,11 @@ valid_points = np.array(valid_points)
 fig = plt.figure(figsize=(10, 7))
 ax = fig.add_subplot(111, projection='3d')
 
-ax.scatter(valid_points[:, 0], valid_points[:, 1], valid_points[:, 2], s=1, alpha=0.7)
+ax.scatter(valid_points[:, 0], valid_points[:, 1], valid_points[:, 2], s=0.5, alpha=0.1)
 ax.set_xlabel('x')
 ax.set_ylabel('y')
 ax.set_zlabel('z')
-ax.set_title('Elliptote : Set of Correlation Matrices')
+ax.set_title('Elliptope : Set of Correlation Matrices')
 
 plt.show()
 ###############################################################################

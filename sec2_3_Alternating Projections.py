@@ -10,7 +10,7 @@ Created on Sat Nov 23 19:41:45 2024
 ###############################################################################
 ############Alternating methods, projections, and accelerations ###############
 ###############################################################################
-
+import scipy as sp
 import numpy as np 
 from numpy.linalg import solve
 from scipy.linalg import sqrtm
@@ -18,7 +18,7 @@ import time
 ## Alternating Projection by Higham (2002)
 
 
-def alternating_proj(M, W, itmax = 500, eps = 1e-6, method = 'classic'): 
+def alternating_proj(M, W, itmax = 1000, eps = 1e-6, method = 'positive only'): 
     """
     Compute the nearest correlation matrix 
     Parameters 
@@ -96,6 +96,10 @@ def proj_K(A, invW):
 def decomposition_eig(A,method): 
     if method == 'classic': 
         return np.linalg.eigh(A)
+    if method == 'positive only': 
+        return sp.linalg.eigh(A, subset_by_value=(1e-6, np.inf))
+    else : 
+        raise ValueError("This method is not covered.")
 
 def reconstruct_matrix_from_csv(file_path, matrix_size, full= False):
     """
@@ -144,28 +148,42 @@ def reconstruct_matrix_from_csv(file_path, matrix_size, full= False):
     np.fill_diagonal(matrix, 1.0)
 
     return matrix
-n = 100
+n = 3000
 tic = time.time()
 mat_input = reconstruct_matrix_from_csv('unrobustified_sign_correls.csv', n, full = (n==18895) )
 time_reconstruction = time.time()-tic
 print("Time to reconstruct the matrix from csv file: ", time_reconstruction)
 
-"""
+
+tac = time.time()
+sol, nbit , dist = alternating_proj(mat_input, np.diag(np.ones(n)), method = 'classic')
+time_alternating = time.time()-tac
+print("Time for alternating projection algorithm (full decomposition) : ", time_alternating)
+print("Number of iterations : ", nbit)
+print("Optimal objective value : ", dist)
 tac = time.time()
 sol, nbit , dist = alternating_proj(mat_input, np.diag(np.ones(n)))
 time_alternating = time.time()-tac
-print("Time for alternating projection algorithm : ", time_alternating)
+print("Time for alternating projection algorithm (only positive eigenvalues) : ", time_alternating)
 print("Number of iterations : ", nbit)
 print("Optimal objective value : ", dist)
-"""
+
+
+###############################################################################
 ## Anderson acceleration of the alternating projection 
-def proj_spd(A, delta):
+def proj_spd(A, delta, method):
     """
     Project A onto the set of symmetric positive semidefinite matrices
     with minimum eigenvalue at least delta.
     """
-    eigenvalues, eigenvectors = np.linalg.eigh(A)
-    # Threshold eigenvalues
+    if method == "positive only": 
+        eigenvalues, eigenvectors = sp.linalg.eigh(A, subset_by_value=(delta, np.inf))
+    
+    elif method == "classic": 
+        eigenvalues, eigenvectors = np.linalg.eigh(A)
+    else : 
+        print(method)
+        raise ValueError("This method is not covered.")
     eigenvalues_new = np.maximum(eigenvalues, delta)
     X = eigenvectors @ np.diag(eigenvalues_new) @ eigenvectors.T
     return (X + X.T) / 2  # Ensure symmetry
@@ -176,7 +194,6 @@ def proj_pattern(A, X, pattern):
     If pattern is None or empty, set the diagonal to one.
     """
     X_new = X.copy()
-    n = A.shape[0]
     if pattern is None or pattern.size == 0:
         np.fill_diagonal(X_new, 1)
     else:
@@ -185,17 +202,17 @@ def proj_pattern(A, X, pattern):
         X_new[fixed_indices] = A[fixed_indices]
     return X_new
 
-def ap_step(A, Yin, Sin, pattern, delta):
+def ap_step(A, Yin, Sin, pattern, delta, method):
     """
     One alternating projections step.
     """
     R = Yin - Sin
-    Xout = proj_spd(R, delta)
+    Xout = proj_spd(R, delta, method)
     Sout = Xout - R
     Yout = proj_pattern(A, Xout, pattern)
     return Xout, Yout, Sout
 
-def nearcorr_aa(A, pattern=None, mMax=2, itmax=100, ls_solve='b', delta=0, tol=None, droptol=0, AAstart=1):
+def nearcorr_aa(A, pattern=None, mMax=2, itmax=500, ls_solve='b', delta=0, tol=None, droptol=0, AAstart=1, method ="positive only"):
     """
     Compute the nearest correlation matrix to A via alternating projections with Anderson acceleration.
     
@@ -241,7 +258,7 @@ def nearcorr_aa(A, pattern=None, mMax=2, itmax=100, ls_solve='b', delta=0, tol=N
     while rel_diffXY > tol and iter_count < itmax:
         iter_count += 1
         # One alternating projections step.
-        Xout, Yout, Sout = ap_step(A, Yin, Sin, pattern, delta)
+        Xout, Yout, Sout = ap_step(A, Yin, Sin, pattern, delta, method)
         
         # Vectorize Yin and Sin into one vector x.
         x = np.concatenate([Yin.flatten(), Sin.flatten()])
@@ -304,11 +321,14 @@ def nearcorr_aa(A, pattern=None, mMax=2, itmax=100, ls_solve='b', delta=0, tol=N
     if iter_count >= itmax and rel_diffXY > tol:
         raise RuntimeError(f"Stopped after {itmax} iterations. Try increasing itmax.")
     return Yin, iter_count
-
+toc = time.time()
+sol, nbiteraa = nearcorr_aa(mat_input, pattern=None, mMax=2, itmax=500, delta=0, method = "classic")
+time_andersonacc = time.time() - toc
+print("Time for Anderson acceleration of the alternating scheme (full decomposition): ", time_andersonacc)
+print("Number of iterations : ", nbiteraa)
 toc = time.time()
 sol, nbiteraa = nearcorr_aa(mat_input, pattern=None, mMax=2, itmax=500, delta=0)
 time_andersonacc = time.time() - toc
-print("Time for Anderson acceleration of the alternating scheme: ", time_andersonacc)
+print("Time for Anderson acceleration of the alternating scheme (only positive): ", time_andersonacc)
 print("Number of iterations : ", nbiteraa)
-
 

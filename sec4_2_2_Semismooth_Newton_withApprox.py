@@ -1,7 +1,7 @@
-###############################################################################
-##   Implementation of the Semismooth Newton Method with preconditioning,    ## 
-##   with cg or minres inner solver                                          ##
-###############################################################################
+## This script incorporates the Eigenvalue Tracking for approximation in eigenvalue
+## decomposition for last iteration
+## Warning : this method does NOT allow the algorithm to convergence
+## Results are displayed in TRACKING_PLOT_LAST_ITER.py
 ##   Update of the algorithm presented by Yancheng Yuan to solve the dual of 
 ##   the following nearest correlation matrix problem : 
 ##   min 0.5 || X - M ||^2 in the Frobenius norm, such that
@@ -12,8 +12,9 @@
 import numpy as np
 import time
 import matplotlib.pyplot as plt 
-import scipy.sparse.linalg as ssl
-from scipy.sparse.linalg import eigsh
+#from scipy.sparse.linalg import eigsh
+ # Uses sparse diagonal matrix
+
 # cg(A, b, x0=None, *, rtol=1e-05, atol=0.0, maxiter=None, M=None, callback=None)
 # minres(A, b, x0=None, *, rtol=1e-05, shift=0.0, maxiter=None, M=None, callback=None, show=False, check=False)
 # bicgstab(A, b, x0=None, *, rtol=1e-05, atol=0.0, maxiter=None, M=None, callback=None)
@@ -196,17 +197,16 @@ def my_jacobian_matrix(x, omega_12, p_input, n):
 
 
 def my_pre_cg(b, tol, maxit, c, omega_12, p_input, n):
-    n2b = np.linalg.norm(b)
-    tolb = tol*n2b
-    flag = 1
-    iterk = 0
-    relres = 1000
     #Initializations
     r = b.copy()
     r = r.reshape(r.size, 1)
-    c = c.reshape(c.size, 1) #preconditioning 
+    c = c.reshape(c.size, 1)
+    n2b = np.linalg.norm(b)
+    tolb = tol*n2b
     p = np.zeros((n, 1))
-
+    flag = 1
+    iterk = 0
+    relres = 1000
     # Precondition
     z = r/c
     rz_1 = np.dot(r.transpose(), z)
@@ -231,7 +231,7 @@ def my_pre_cg(b, tol, maxit, c, omega_12, p_input, n):
             r = r - alpha*w
 
         z = r/c
-        if np.linalg.norm(r)<=tolb: 
+        if np.linalg.norm(r)<=tolb: #exit if hmat p = b solved in relative error tolerance
             iterk = k+1
             relres = np.linalg.norm(r)/n2b
             flag = 0
@@ -243,26 +243,26 @@ def my_pre_cg(b, tol, maxit, c, omega_12, p_input, n):
     return p, flag, relres, iterk
 
 # end of pre_cg
+
 # start of minres in case of use of preconditioned minimimization of residues method
 def my_minres(b, tol, maxit, c, omega_12, p_input, n):
+    # Initializations
+    n2b = np.linalg.norm(b)
+    r = b.copy()
+    r = r.reshape(r.size, 1)
+    c = c.reshape(c.size, 1)
+    p = np.zeros((n, 1))
     n2b = np.linalg.norm(b)
     tolb = tol * n2b
+    z = r/c
+    d0 = z
+    d1 = z
+    w0 = my_jacobian_matrix(z, omega_12, p_input, n)
+    w1 = w0
     flag = 1
     iterk = 0
     relres = 1000
     
-    # Initializations
-    p = np.zeros((n, 1))  
-    r = b.copy()
-    r = r.reshape(r.size, 1)
-    c = c.reshape(c.size, 1) #preconditioning    
-
-    z = r/c
-    d0 = z
-    d1 = z
-    w1 = my_jacobian_matrix(z, omega_12, p_input, n)
-    w0 = w1
-
     #MINRES iteration
     for k in range(0, maxit):
         d2 = d1; d1 = d0
@@ -277,8 +277,8 @@ def my_minres(b, tol, maxit, c, omega_12, p_input, n):
             flag = 0
             break
         z = r/c
-        d0 = z
-        w0 = my_jacobian_matrix(d0, omega_12, p_input, n)
+        p0 = z 
+        w0 = my_jacobian_matrix(p0, omega_12, p_input, n)
         
         Beta1 = np.dot(w0.transpose(), w1)/np.dot(w1.transpose(), w1)
         
@@ -288,7 +288,11 @@ def my_minres(b, tol, maxit, c, omega_12, p_input, n):
             Beta2 =  np.dot(w0.transpose(), w2)/np.dot(w2.transpose(), w2)
             d0 = d0 - Beta2 * d2
             w0 = w0 - Beta2 * w2
+       
+        
+    
     return p, flag, relres, iterk
+
 # end of minres 
 
 #to generate the diagonal preconditioner
@@ -389,15 +393,65 @@ def plot_eigenvalues_histogram(eigenvalues, bins=50, log_scale=True):
     plt.title("Histogram of Eigenvalues")
     plt.grid(True)
     plt.show()
-    
-def my_mexeig_iterative(x_input, initial):
+  
+def first_order_perturbation_vectorized(lam, U, delty):
     """
-    
+    Compute first-order perturbation corrections to the eigenvalues and eigenvectors
+    of a Hermitian matrix M perturbed by Diag(y).
+
+    Parameters:
+      lam : np.ndarray
+          Array of initial eigenvalues, sorted in descending order.
+      U : np.ndarray
+          Matrix of initial eigenvectors.
+      delty : np.ndarray
+          Perturbation vector of size (n,), used in Diag(y).
+          
+    Returns:
+      lam_pert : np.ndarray
+          Approximated eigenvalues of M + Diag(y).
+      U_pert : np.ndarray
+          Matrix whose columns are the approximated eigenvectors.
+    """
+    # Compute correction matrix A = U.T @ Diag(y) @ U efficiently
+    delty = delty.flatten()
+    assert U.ndim == 2, f"U has {U.ndim} dimensions, expected 2"
+    assert delty.ndim == 1, f"delty has {delty.ndim} dimensions, expected 1"
+    assert U.shape[0] == delty.shape[0], f"Incompatible shapes: U {U.shape}, delty {delty.shape}"
+    U = np.asarray(U)
+    print(U.shape)
+    print(delty[:,None].shape)
+    A = delty[:,None] * U
+    print("Element-wise product finished")
+    A = np.dot(U.T, A)
+    print("Computation of A finished")
+    # Compute weighting matrix 
+    lam = lam.flatten()
+    diffs = lam[:, None] - lam[None, :]  # (n, n) matrix    
+    np.fill_diagonal(diffs, np.inf)  # avoid division by zero on the diagonal 
+    # --- Correction to the eigenvalues ---
+    lam = lam + np.diag(A)
+    # --- Correction to the eigenvectors --- 
+    A = A.transpose() / diffs
+    # Compute corrections to the eigenvectors
+    U = U + np.dot(U, A)
+    print("Correction to eigenvectors finished")
+    # Normalize each eigenvector (each column)
+    U = U / np.linalg.norm(U, axis=0, keepdims=True)
+    return lam, U
+
+def my_mexeig(x_input, deltay, lam, U):
+    """
     Computation of the eigenvalues of x_input, with eigenvalues in a decreasing order 
-    
     """
     [n, m] = x_input.shape
-    [lamb, p_x] = eigsh(x_input, k=n,v0 = initial , tol= 1e-6)
+    
+    if (np.abs(np.mean(deltay)) < 0.5 ) : # and np.var(deltay) < 1) : 
+        print("first order approximation of eigenvalues")
+        [lamb, p_x] = first_order_perturbation_vectorized(lam, U, deltay)
+    else : 
+        print("exact computation of eigenvalues")
+        [lamb, p_x] = np.linalg.eigh(x_input)
     
     p_x = p_x.real
     lamb = lamb.real
@@ -417,41 +471,8 @@ def my_mexeig_iterative(x_input, initial):
 
         p_x = p_x[:, idx]
 
-    lamb = lamb.reshape((n, 1))
-    p_x = p_x.reshape((n, n))
-    return p_x, lamb
-
-# end of my_mymexeig()
-
-def my_mexeig(x_input):
-    """
-    
-    Computation of the eigenvalues of x_input, with eigenvalues in a decreasing order 
-    
-    """
-    [n, m] = x_input.shape
-    [lamb, p_x] = np.linalg.eigh(x_input)
-    
-    p_x = p_x.real
-    lamb = lamb.real
-    lamb[np.abs(lamb) < 1e-6] = 0
-    # we want eigenvalues in a decreasing order 
-    if my_issorted(lamb, 1): #if in increasing order, it suffices to invert the order
-    
-        lamb = lamb[::-1]
-        p_x = np.fliplr(p_x)
-        
-    elif my_issorted(lamb, -1): #in this case, it's already done 
-        return p_x, lamb
-    else: #otherwise, we need to classify the eigenvalues and corresponding eigenvectors
-        idx = np.argsort(-lamb)
-
-        lamb = lamb[idx]
-
-        p_x = p_x[:, idx]
-
-    lamb = lamb.reshape((n, 1))
-    p_x = p_x.reshape((n, n))
+    #lamb = lamb.reshape((n, 1))
+    #p_x = p_x.reshape((n, n))
     return p_x, lamb
 
 # end of my_mymexeig()
@@ -467,7 +488,7 @@ def my_correlationmatrix(M, b_input=None, tau=None, tol=None):
     GradNorm = []
     exectime = dict()
     inneriter = []
-    y_tracking = dict()
+    #y_tracking = dict()
     rank_track = []
     rank_positive_track = []
     ####
@@ -510,11 +531,13 @@ def my_correlationmatrix(M, b_input=None, tau=None, tol=None):
     # allocation 
     y = np.zeros((n, 1))   # n dual variables 
     f_y = np.zeros((n, 1)) # n values for the gradient   
-    
+    deltay = np.ones((n, 1)) * 1000
+    lamb = np.zeros((n, 1))
+    p_x = np.zeros((n, n))
     # init
     k=0         
     f_eval = 0       # init of the number of function evaluations
-    iter_whole = 200 # maximum number of the outer algo 
+    iter_whole = 13  # maximum number of the outer algo 
     iter_inner = 20  # maximum number of line search in Newton method
     maxit = 200      # maximum number of iterations in PCG
     iterk = 0
@@ -533,13 +556,13 @@ def my_correlationmatrix(M, b_input=None, tau=None, tol=None):
     
     
     ###########################################################################
-    x_result = M + np.diagflat(y)
+    x_result = M + np.diagflat(y) # = M 
     # ensure symmetry
     x_result = (x_result + x_result.transpose())/2.0
     # time for the eigenvalue decomposition of x_result 
     eig_time0 = time.perf_counter()
-    [p_x, lamb] = my_mexeig(x_result)  
-    plot_eigenvalues_histogram(lamb)
+    [p_x, lamb] = my_mexeig(x_result, deltay, lamb, p_x)  
+    #plot_eigenvalues_histogram(lamb)
     rank_track.append(len(lamb[lamb != 0]))
     rank_positive_track.append(len(lamb[lamb > 0]))
     eig_time = eig_time + (time.perf_counter() - eig_time0)
@@ -579,7 +602,7 @@ def my_correlationmatrix(M, b_input=None, tau=None, tol=None):
     
     omega_12 = my_omega_mat(p_x, lamb, n)
     x0 = y.copy()
-    y_tracking[0] = x0
+    #y_tracking[0] = x0
     while np.abs(gap) > error_tol and norm_b/(1+norm_b0) > error_tol and k < iter_whole:
         #preconditioning 
         prec_time0 = time.perf_counter()
@@ -597,16 +620,15 @@ def my_correlationmatrix(M, b_input=None, tau=None, tol=None):
             print ('=== Not a completed Newton-CG step === \n')
 
         slope = np.dot((f_y - b_g).transpose(), d)
-
+        deltay = (x0 + d) - y
         y = (x0 + d).copy()
-        y_tracking[k+1]=y
+        #y_tracking[k+1]=y
         #######################################################################
         x_result = M + np.diagflat(y)
         x_result = (x_result + x_result.transpose())/2.0
         eig_time0 = time.perf_counter()
-        [p_x, lamb] = my_mexeig(x_result)
-        plot_eigenvalues_histogram(lamb)
-        #[p_x, lamb] = my_mexeig_iterative(x_result, lamb)
+        [p_x, lamb] = my_mexeig(x_result,deltay, lamb, p_x)
+        #plot_eigenvalues_histogram(lamb)
         rank_track.append(len(lamb[lamb != 0]))
         rank_positive_track.append(len(lamb[lamb > 0]))
         eig_time = eig_time + (time.perf_counter() - eig_time0)
@@ -616,12 +638,13 @@ def my_correlationmatrix(M, b_input=None, tau=None, tol=None):
         #inner loop, armijo condition 
         while k_inner <= iter_inner and f > f_0 + sigma_1*(np.power(0.5, k_inner))*slope + 1.0e-6:
             k_inner = k_inner + 1
+            deltay = x0 + (np.power(0.5, k_inner))*d - y 
             y = x0 + (np.power(0.5, k_inner))*d
             ###################################################################
             x_result = M + np.diagflat(y)
             x_result = (x_result + x_result.transpose())/2.0
             eig_time0 = time.perf_counter()
-            [p_x, lamb] = my_mexeig(x_result)
+            [p_x, lamb] = my_mexeig(x_result,deltay, lamb, p_x)
             #[p_x, lamb] = my_mexeig_iterative(x_result, lamb)
             rank_track.append(len(lamb[lamb != 0]))
             rank_positive_track.append(len(lamb[lamb > 0]))
@@ -680,72 +703,9 @@ def my_correlationmatrix(M, b_input=None, tau=None, tol=None):
     exectime['eig_time'] = eig_time
     print ('Newton-CG: computing time used for equal weight calibration ============ %s \n' % time_used)
     exectime['total time'] = time_used 
-    return x_result, y , rank_x, y_tracking, GradNorm, DualObjValue, PrimalObjValue, RelativeDualityGap, exectime, inneriter, rank_track, rank_positive_track
+    return x_result, y , rank_x, GradNorm, DualObjValue, PrimalObjValue, RelativeDualityGap, exectime, inneriter, rank_track, rank_positive_track
 
 # end of the main function
-######################### Tests On Random Data ################################
-"""
-# test on random matrix (not a pseudo correlation matrix)
-n=2000
-data_g_test = np.random.randn(n, n)
-data_g_test = (data_g_test + data_g_test.transpose())/2.0 
-data_g_test = data_g_test - np.diag(np.diag(data_g_test))  +np.eye(n)
-b = np.ones((n, 1))
-tau = 0
-tol = 1.0e-6
-[x_test_result, y_test_result] = my_correlationmatrix(data_g_test,b,tau,tol)
-"""
-def generate_pseudo_correlation_matrix(n, rank, negligible_threshold=1e-6):
-    # Step 1: Generate a random symmetric matrix
-    A = np.random.uniform(-1, 1, (n, n))
-    pseudo_corr = (A + A.T) / 2  # Make it symmetric
-
-    # Step 2: Set the diagonal to 1
-    np.fill_diagonal(pseudo_corr, 1)
-
-    # Step 3: Perform eigen-decomposition
-    eigenvalues, eigenvectors = np.linalg.eigh(pseudo_corr)
-    eigenvalues = eigenvalues - np.ones(n) * (np.max(eigenvalues)-np.min(eigenvalues))/2
-    # Step 4: Adjust eigenvalues to control rank
-    eigenvalues[abs(eigenvalues) < negligible_threshold ] = np.random.uniform(negligible_threshold, 1)
-    # Step 5: Set remaining eigenvalues to 0 or negligible
-    #eigenvalues[:] = 0
-
-    # Step 6: Reconstruct the matrix
-    pseudo_corr = eigenvectors @ np.diag(eigenvalues) @ eigenvectors.T
-
-    # Reset diagonal to 1 (due to numerical drift)
-    np.fill_diagonal(pseudo_corr, 1)
-    eigenval, eigenvec  = np.linalg.eigh(pseudo_corr)
-    return pseudo_corr, np.diag(eigenval[:rank]), eigenvec[:,:rank]
-
-"""
-# test on random pseudo-correlation matrix
-sizes = [5000]
-# Variable to stock the time execution 
-execution_times = []
-
-for n in sizes:
-    print(f"Processing matrix of size {n}x{n}...")
-    pseudo_corr, _, _ = generate_pseudo_correlation_matrix(n, int(n/4))
-    
-    # Execution time of my_correlationmatrix
-    start_time = time.time()
-    my_correlationmatrix(pseudo_corr, np.ones((n,1)), tau = 0, tol = 1e-6)
-    end_time = time.time()
-    
-    execution_times.append(end_time - start_time)
-
-# Show the results
-plt.figure(figsize=(10, 6))
-plt.plot(sizes, execution_times, marker='o', label="Temps d'exécution")
-plt.xlabel("Matrix size (n x n)")
-plt.ylabel("Execution time (secondes)")
-plt.title("Execution time of the Optimized Semismooth Method for different matrix size")
-plt.grid(True)
-plt.legend()
-plt.show()
-"""
 ######################### Test on Real Data from BNP ##########################
 def reconstruct_matrix_from_csv(file_path, matrix_size, full= False):
     """
@@ -797,22 +757,24 @@ def reconstruct_matrix_from_csv(file_path, matrix_size, full= False):
 # csv file contains 178 501 065 values, so the matrix has 178 501 065 * 2  off-diagonal values 
 # the diagonal is size n 
 # so we have n + 178 501 065 *2 = n*n => n = 18895
-sizes = [100]
+sizes = [18895]
 GradN = dict()
 DualObj = dict()
 PrimalObj = dict()
 RelDualityGap = dict()
 IterInn = dict()
 exect = dict()
-ysol = dict()
 track_ranks =  dict()
 track_nbpositive_eig = dict()
 for n in sizes : 
+    
     tic = time.time()
     mat_input = reconstruct_matrix_from_csv('unrobustified_sign_correls.csv', n, full = (n == 18895))
     time_to_reconstruct_data = time.time() - tic 
     print(f"Time to reconstruct data of size n = {n}: {time_to_reconstruct_data:.4f} seconds")
-    x_result, y, rank_x, y_tracking, GradNorm, DualObjValue, PrimalObjValue, RelativeDualityGap, exectime, inneriter, trackrank, trackposeig = my_correlationmatrix(mat_input, np.ones((n,1)), tau = 0, tol = 1e-6)
+    
+    x_result, y, rank_x, GradNorm, DualObjValue, PrimalObjValue, RelativeDualityGap, exectime, inneriter, trackrank, trackposeig = my_correlationmatrix(mat_input, np.ones((n,1)), tau = 0, tol = 1e-6)
+
     #print(f"Primal variable for data of size n = {n}: {x_result} ")
     #print(f"Dual variable for data of size n = {n}: {y} ")
     GradN[n] = GradNorm
@@ -821,11 +783,10 @@ for n in sizes :
     RelDualityGap[n] = RelativeDualityGap
     exect[n] = exectime
     IterInn[n] = inneriter
-    ysol[n] = y_tracking
     track_ranks[n] = trackrank
     track_nbpositive_eig[n] = trackposeig
     
-with open("results2703.txt", "w") as file:
+with open("resultsAPPROX.txt", "w") as file:
     file.write("Sizes:\n")
     file.write(str(sizes) + "\n\n")
     
@@ -868,56 +829,4 @@ with open("results2703.txt", "w") as file:
     for key, value in track_nbpositive_eig.items(): 
         file.write(f"n = {key}: {value}\n")
         
-import numpy as np
 
-with open("ydual2703.txt", "w") as file:
-    for key, inner_dict in ysol.items():
-        file.write(f"n = {key}:\n")
-        # Trier les éléments du dictionnaire par clé (pour garantir l'ordre)
-        sorted_items = sorted(inner_dict.items(), key=lambda item: item[0])
-
-        # Écrire les valeurs individuelles de y
-        file.write("Valeurs de y :\n")
-        for iter_key, y_val in sorted_items:
-            file.write(f"  Itération {iter_key} : {y_val}\n")
-
-        # Calculer les différences entre itérations successives
-        if len(sorted_items) >= 2:
-            file.write("Différences entre itérations (y_i - y_{i-1}) :\n")
-            for i in range(1, len(sorted_items)):
-                iter_prev, y_prev = sorted_items[i - 1]
-                iter_curr, y_curr = sorted_items[i]
-                # Conversion en tableaux numpy pour effectuer les calculs
-                y_prev_arr = np.array(y_prev)
-                y_curr_arr = np.array(y_curr)
-                delta_y = y_curr_arr - y_prev_arr
-                # Calcul des statistiques pour delta_y
-                mean_delta = np.mean(delta_y)
-                var_delta = np.var(delta_y)
-                min_delta = np.min(delta_y)
-                max_delta = np.max(delta_y)
-                # Écriture des résultats dans le fichier
-                file.write(f"  Différence entre itération {iter_curr} et {iter_prev} : {delta_y}\n")
-                file.write(f"    Moyenne : {mean_delta}\n")
-                file.write(f"    Variance : {var_delta}\n")
-                file.write(f"    Minimum : {min_delta}\n")
-                file.write(f"    Maximum : {max_delta}\n")
-        else:
-            file.write("Pas assez de valeurs pour calculer les différences.\n")
-
-        file.write("\n")
-
-
-
-
-
-        
-############# Visualization of the performances ###############################
-# First figure one for each n 
-# Primal Value VS Iterations 
-# Dual Value VS Iterations 
-# Norm of the Gradient Vs Iterations
-# Gap Vs iterations
-# Time vs iterations 
-# Second figure 
-# intéressant de voir le delta évolutif entre les y 
